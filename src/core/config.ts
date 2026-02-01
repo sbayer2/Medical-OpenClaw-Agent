@@ -1,5 +1,7 @@
 // Configuration loader - reads from environment variables
 
+export type IngestionMode = "slack" | "webhook" | "both";
+
 export interface Config {
   anthropic: {
     apiKey: string;
@@ -20,6 +22,13 @@ export interface Config {
   clarity: {
     connectUrl: string;
     apiKey: string;
+  };
+  workato?: {
+    webhookPort: number;
+    webhookSecret: string;
+  };
+  ingestion: {
+    mode: IngestionMode;
   };
   agent: {
     physicianName: string;
@@ -57,6 +66,13 @@ export function loadConfig(): Config {
     clarity: {
       connectUrl: requireEnv("CLARITY_CONNECT_URL", "https://placeholder.clarity.com"),
       apiKey: requireEnv("CLARITY_CONNECT_API_KEY", "placeholder-api-key"),
+    },
+    workato: process.env.WORKATO_WEBHOOK_PORT ? {
+      webhookPort: parseInt(requireEnv("WORKATO_WEBHOOK_PORT", "3100"), 10),
+      webhookSecret: requireEnv("WORKATO_WEBHOOK_SECRET", ""),
+    } : undefined,
+    ingestion: {
+      mode: requireEnv("INGESTION_MODE", "slack") as IngestionMode,
     },
     agent: {
       physicianName: requireEnv("AGENT_PHYSICIAN_NAME", "Dr. OpenClaw"),

@@ -1,7 +1,7 @@
 {
   "name": "openclaw-medical-agent",
-  "version": "0.1.0",
-  "description": "OpenClaw medical agent for Slack + Epic Haiku integration via Anthropic Opus 4.5",
+  "version": "0.2.0",
+  "description": "OpenClaw medical agent for Slack + Epic Haiku integration via Anthropic Opus 4.5. Supports Clarity Connect, FHIR R4 (Community Connect), and Workato.",
   "type": "module",
   "main": "dist/index.js",
   "scripts": {

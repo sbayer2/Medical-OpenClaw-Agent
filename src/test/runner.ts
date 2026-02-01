@@ -2,6 +2,7 @@
 
 import { HL7Parser } from "../epic/hl7-parser.js";
 import { EpicDeepLinks } from "../epic/deep-links.js";
+import { FHIRParser } from "../fhir/parser.js";
 import { generateHL7LabResult, generateScenarios } from "./synthetic-data.js";
 
 let passed = 0;
@@ -71,6 +72,128 @@ function testEpicDeepLinks(): void {
   assert(labLink.includes("ORD-999"), "Lab link contains order ID");
 }
 
+function testFHIRParser(): void {
+  console.log("\n--- FHIR R4 Parser Tests (Community Connect) ---\n");
+  const parser = new FHIRParser();
+
+  // Test DiagnosticReport
+  const diagReport = {
+    resourceType: "DiagnosticReport" as const,
+    id: "DR-12345",
+    status: "final",
+    code: { coding: [{ code: "58410-2", display: "Complete Blood Count", system: "http://loinc.org" }], text: "CBC" },
+    subject: { reference: "Patient/PAT-99999", display: "Smith, John" },
+    effectiveDateTime: "2026-01-31T10:00:00Z",
+    issued: "2026-01-31T12:00:00Z",
+    performer: [{ reference: "Practitioner/PROV-111", display: "Dr. Jane Doe" }],
+    result: [
+      { reference: "Observation/OBS-1", display: "WBC" },
+      { reference: "Observation/OBS-2", display: "Hemoglobin" },
+    ],
+    conclusion: "All values within normal limits.",
+  };
+  const drResults = parser.parse(diagReport);
+  assert(drResults.length === 1, "DiagnosticReport: parsed 1 message");
+  assert(drResults[0].messageType === "LAB_RESULT", "DiagnosticReport: correct message type");
+  assert(drResults[0].patient.mrn === "PAT-99999", "DiagnosticReport: correct patient ID");
+  assert(drResults[0].provider.name === "Dr. Jane Doe", "DiagnosticReport: correct provider");
+  assert(drResults[0].content.subject.includes("CBC"), "DiagnosticReport: subject contains test name");
+
+  // Test Observation (critical potassium)
+  const critObs = {
+    resourceType: "Observation" as const,
+    id: "OBS-CRIT-1",
+    status: "final",
+    code: { coding: [{ code: "2823-3", display: "Potassium", system: "http://loinc.org" }], text: "Potassium" },
+    subject: { reference: "Patient/PAT-88888", display: "Doe, Jane" },
+    effectiveDateTime: "2026-01-31T08:00:00Z",
+    valueQuantity: { value: 6.9, unit: "mEq/L" },
+    referenceRange: [{ low: { value: 3.5, unit: "mEq/L" }, high: { value: 5.0, unit: "mEq/L" } }],
+    interpretation: [{ coding: [{ code: "HH", display: "Critical high" }] }],
+  };
+  const obsResults = parser.parse(critObs);
+  assert(obsResults.length === 1, "Observation: parsed 1 message");
+  assert(obsResults[0].messageType === "LAB_RESULT", "Observation: correct message type");
+  assert(obsResults[0].content.labResults?.[0]?.value === "6.9", "Observation: correct value");
+  assert(obsResults[0].content.labResults?.[0]?.flag === "critical", "Observation: critical flag detected");
+  assert(obsResults[0].content.urgency === "critical", "Observation: urgency is critical");
+  assert(obsResults[0].content.labResults?.[0]?.referenceRange === "3.5-5 mEq/L", "Observation: reference range formatted");
+
+  // Test ServiceRequest (scheduling)
+  const schedReq = {
+    resourceType: "ServiceRequest" as const,
+    id: "SR-55555",
+    status: "active",
+    intent: "order",
+    priority: "urgent",
+    code: { text: "CT Abdomen with Contrast" },
+    subject: { reference: "Patient/PAT-77777", display: "Chen, Robert" },
+    requester: { reference: "Practitioner/PROV-222", display: "Dr. Michael Ross" },
+    reasonCode: [{ text: "Abdominal pain evaluation" }],
+  };
+  const srResults = parser.parse(schedReq);
+  assert(srResults.length === 1, "ServiceRequest: parsed 1 message");
+  assert(srResults[0].messageType === "SCHEDULE_STUDY", "ServiceRequest: correct message type");
+  assert(srResults[0].content.urgency === "urgent", "ServiceRequest: urgent priority");
+  assert(srResults[0].provider.name === "Dr. Michael Ross", "ServiceRequest: correct requester");
+
+  // Test MedicationRequest
+  const medReq = {
+    resourceType: "MedicationRequest" as const,
+    id: "MR-33333",
+    status: "active",
+    intent: "order",
+    medicationCodeableConcept: { text: "Atorvastatin 40mg" },
+    subject: { reference: "Patient/PAT-66666", display: "Okafor, Linda" },
+    requester: { reference: "Practitioner/PROV-333", display: "Dr. Sarah Kim" },
+    dosageInstruction: [{ text: "Take 1 tablet by mouth daily at bedtime" }],
+  };
+  const mrResults = parser.parse(medReq);
+  assert(mrResults.length === 1, "MedicationRequest: parsed 1 message");
+  assert(mrResults[0].messageType === "MEDICATION_REFILL", "MedicationRequest: correct message type");
+  assert(mrResults[0].content.subject.includes("Atorvastatin"), "MedicationRequest: subject has medication name");
+
+  // Test Communication (follow-up detection)
+  const comm = {
+    resourceType: "Communication" as const,
+    id: "COMM-44444",
+    status: "completed",
+    category: [{ coding: [{ code: "notification", display: "Follow-up Notification" }] }],
+    subject: { reference: "Patient/PAT-55555", display: "Santos, Maria" },
+    sender: { reference: "Practitioner/PROV-444", display: "Dr. Michael Ross" },
+    payload: [{ contentString: "Patient needs 2-week follow-up after cardiac catheterization." }],
+    sent: "2026-01-31T14:00:00Z",
+  };
+  const commResults = parser.parse(comm);
+  assert(commResults.length === 1, "Communication: parsed 1 message");
+  assert(commResults[0].messageType === "FOLLOW_UP_NEEDED", "Communication: detected follow-up type");
+  assert(commResults[0].content.body.includes("cardiac catheterization"), "Communication: body preserved");
+
+  // Test Bundle (multiple resources)
+  const bundle = {
+    resourceType: "Bundle" as const,
+    type: "searchset",
+    entry: [
+      { resource: diagReport },
+      { resource: critObs },
+      { resource: medReq },
+    ],
+  };
+  const bundleResults = parser.parse(bundle);
+  assert(bundleResults.length === 3, "Bundle: parsed 3 messages from bundle");
+
+  // Test JSON string input (simulates raw webhook body)
+  const jsonString = JSON.stringify(critObs);
+  const strResults = parser.parse(jsonString);
+  assert(strResults.length === 1, "String input: parsed JSON string correctly");
+  assert(strResults[0].content.labResults?.[0]?.flag === "critical", "String input: preserved critical flag");
+
+  // Test empty/unknown resource
+  const unknownResource = { resourceType: "Patient" as const, id: "PAT-00000" };
+  const unknownResults = parser.parse(unknownResource as any);
+  assert(unknownResults.length === 0, "Unknown resource: returns empty array");
+}
+
 function testSyntheticDataGeneration(): void {
   console.log("\n--- Synthetic Data Generation Tests ---\n");
   const scenarios = generateScenarios();
@@ -102,10 +225,12 @@ function testSyntheticDataGeneration(): void {
 // Run all tests
 console.log("===========================================");
 console.log("  OpenClaw Medical Agent - Offline Tests");
+console.log("  v0.2.0 (+ FHIR R4 / Community Connect)");
 console.log("===========================================");
 
 testHL7Parser();
 testEpicDeepLinks();
+testFHIRParser();
 testSyntheticDataGeneration();
 
 console.log("\n===========================================");

@@ -2,15 +2,27 @@
 
 **An open-source research tool that connects your Epic Haiku, Slack, and an AI assistant to automate routine clinical tasks — so you can focus on what matters.**
 
+**v0.2.0 — Now supports Epic Community Connect (FHIR R4) and Workato integration.**
+
 ---
 
 ## What This Is (In Plain Language)
 
 If you're a physician, NP, or PA who uses **Epic Haiku** on your iPhone and communicates with your care team through a **Slack medical workspace**, you already know the reality: your day is filled with hundreds of routine notifications — normal lab results that need acknowledging, refill requests for maintenance medications, scheduling requests, follow-up reminders, and office call triage. Each one takes 30 seconds to 2 minutes of your attention. Multiplied across a full panel, that's hours of your day spent on tasks that follow clear, repeatable clinical protocols.
 
-**Medical OpenClaw Agent** is a research tool that places an AI assistant (powered by Anthropic's Claude) inside your Slack workspace. It reads the clinical messages that flow from Epic through Clarity Connect, understands them the way you would, and handles the routine ones autonomously — exactly the way you'd handle them yourself. For anything that requires actual clinical judgment, it escalates to you immediately with a full summary and a deep link to open that patient's chart directly in Epic Haiku on your phone.
+**Medical OpenClaw Agent** is a research tool that places an AI assistant (powered by Anthropic's Claude) inside your Slack workspace. It reads the clinical messages that flow from Epic — whether through Clarity Connect, FHIR R4 APIs (Community Connect), or integration platforms like Workato — understands them the way you would, and handles the routine ones autonomously. For anything that requires actual clinical judgment, it escalates to you immediately with a full summary and a deep link to open that patient's chart directly in Epic Haiku on your phone.
 
 **Think of it as a highly competent medical scribe that also triages your inbox.**
+
+### Three Ways to Connect to Epic
+
+| Path | Who Uses It | How Data Arrives |
+|---|---|---|
+| **Slack Direct** | Orgs that route Clarity Connect messages to Slack | HL7v2 or JSON in your Slack channel |
+| **FHIR R4 / Community Connect** | Affiliates on a shared Epic instance who don't control Bridges | FHIR R4 Subscriptions or Polling via webhook |
+| **Workato / iPaaS** | Orgs using Workato, Mirth Connect, Rhapsody, or other middleware | HTTP POST to the agent's webhook endpoint |
+
+You can run any combination of these simultaneously.
 
 ---
 
@@ -47,31 +59,50 @@ This tool was built with the following non-negotiable safety rules:
 
 ## How It Works (The Data Flow)
 
+### Path 1: Slack Direct (Original Mode)
+
 ```
 Epic EHR (Clarity Database)
        |
        v
-Clarity Connect
-(Converts HL7v2 pipe-delimited messages to JSON)
+Clarity Connect → Your Slack Channel → OpenClaw Agent → Claude AI → Slack Response
+```
+
+### Path 2: FHIR R4 / Community Connect (New in v0.2.0)
+
+```
+Epic Community Connect (shared instance)
        |
        v
-Your Slack Medical Workspace
-(Messages arrive in a designated channel)
+FHIR R4 Subscription Notification
        |
        v
-OpenClaw Medical Agent (this software)
-(Reads the message, sends it to Claude for clinical reasoning)
-       |
-       v
-Claude AI (Anthropic Opus 4.5)
-(Analyzes the clinical data, determines appropriate action)
-       |
-       v
-Agent posts response back to Slack with:
-  - Action taken (or escalation request)
-  - Clinical reasoning summary
-  - Patient details (MRN, name, relevant history)
-  - "Open in Epic Haiku" button (deep link to patient chart on your iPhone)
+POST /webhook/fhir → OpenClaw Agent → Claude AI → Slack Response
+```
+
+Community Connect affiliates don't control the host system's Bridges or interface engine. Instead, the agent accepts FHIR R4 resources (DiagnosticReport, Observation, ServiceRequest, MedicationRequest, Communication) directly via webhook. The built-in FHIR parser converts these into the same internal format used by the HL7v2 pipeline.
+
+### Path 3: Workato / iPaaS (New in v0.2.0)
+
+```
+Epic EHR → Workato On-Prem Agent (OPA) → Workato Recipe → POST /webhook/workato → Agent
+```
+
+Workato recipes can send data in any of these formats — the agent auto-detects:
+- FHIR R4 JSON (if `resourceType` is present)
+- Raw HL7v2 wrapped in a JSON envelope (`hl7_raw`, `hl7Raw`, or `raw_hl7` field)
+- Pre-converted JSON matching the agent's schema
+- Workato-transformed payloads (snake_case fields like `patient_mrn`)
+
+This also works with Mirth Connect, Rhapsody, Cloverleaf, or any HTTP-capable middleware.
+
+### All Paths Converge
+
+Regardless of how data arrives, it flows through the same clinical reasoning pipeline:
+
+```
+Parsed Medical Message → Claude AI (Opus 4.5) → Clinical Decision → Slack Response
+                                                                    + Epic Haiku Deep Link
 ```
 
 When you tap the **"Open in Epic Haiku"** button in Slack on your iPhone, it opens that specific patient's chart directly in the Epic Haiku app — no searching, no navigating.
@@ -86,7 +117,10 @@ You should already have all of these through your hospital/practice IT departmen
 |---|---|---|
 | **Epic Haiku** on your iPhone | Your mobile Epic app | Already installed by your IT dept |
 | **Slack workspace** | Your medical team's Slack | Already set up by your organization |
-| **Clarity Connect** | The bridge between Epic's database and external systems | Your Epic/IT team |
+| **Data source** (one or more of:) | | |
+| — Clarity Connect | Direct bridge between Epic and Slack | Your Epic/IT team |
+| — FHIR R4 access | For Community Connect affiliates | Your host org's Epic team |
+| — Workato / iPaaS | Integration platform with Epic OPA | Your IT team or Workato admin |
 | **Anthropic API key** | Access to Claude AI (the brain of the agent) | You — see setup instructions below |
 | **A computer** | Mac, Linux, or Windows with WSL2 | Your work or personal machine |
 
@@ -228,6 +262,16 @@ EPIC_PRIVATE_KEY_PATH=./keys/epic-private-key.pem
 CLARITY_CONNECT_URL=https://your-clarity-connect-url.com
 CLARITY_CONNECT_API_KEY=ask-your-it-department
 
+# === Ingestion Mode (NEW in v0.2.0) ===
+# "slack"   — Listen for messages in Slack channel only (default, original mode)
+# "webhook" — Listen for HTTP POST from Workato/FHIR/middleware only
+# "both"    — Listen on both Slack and webhook simultaneously
+INGESTION_MODE=slack
+
+# === Webhook Settings (only needed if INGESTION_MODE is "webhook" or "both") ===
+WORKATO_WEBHOOK_PORT=3100
+WORKATO_WEBHOOK_SECRET=your-shared-secret-here
+
 # Your information
 AGENT_PHYSICIAN_NAME=Dr. Your Name
 AGENT_PHYSICIAN_NPI=your-10-digit-NPI
@@ -248,10 +292,10 @@ npm test
 
 You should see output ending with:
 ```
-Results: 49 passed, 0 failed
+Results: 74 passed, 0 failed
 ```
 
-This confirms the HL7v2 parser, deep link generator, and synthetic data systems are all working.
+This confirms the HL7v2 parser, FHIR R4 parser, deep link generator, and synthetic data systems are all working.
 
 ---
 
@@ -285,15 +329,27 @@ npm run dev
 You should see:
 ```
 ===========================================
-  OpenClaw Medical Agent v0.1.0
+  OpenClaw Medical Agent v0.2.0
   Anthropic Opus 4.5 + Slack + Epic Haiku
+  FHIR R4 + Workato Webhook Support
 ===========================================
 
+[OpenClaw] Ingestion mode: slack
 [OpenClaw] Slack bot connected and listening
 [OpenClaw] Agent is live. Listening for medical messages...
 ```
 
-The agent is now active in your Slack channel. When Clarity Connect sends clinical messages to that channel, the agent will process them.
+If you're using webhook mode (`INGESTION_MODE=webhook` or `both`), you'll also see:
+```
+[Workato] Webhook listener started on port 3100
+[Workato] Endpoints:
+[Workato]   POST /webhook/workato   — Workato recipe delivery
+[Workato]   POST /webhook/fhir      — FHIR R4 Subscription notifications
+[Workato]   POST /webhook/hl7       — Raw HL7v2 delivery
+[Workato]   GET  /webhook/health    — Health check
+```
+
+The agent processes messages from whichever sources are configured.
 
 To stop the agent, press `Ctrl+C`.
 
@@ -334,16 +390,78 @@ When you see the **"Open in Epic Haiku"** button in a Slack message and tap it o
 
 ---
 
-## Clarity Connect Integration
+## Data Source Setup Guides
 
-This agent expects clinical messages to arrive in your Slack channel in one of two formats:
+### Option A: Clarity Connect (Slack Direct)
 
-1. **HL7v2 pipe-delimited** (raw from Clarity Connect) — The agent's built-in parser handles this
-2. **JSON** (pre-converted by Clarity Connect) — The agent reads this directly
+This is the original mode. Your IT department configures Clarity Connect to route HL7v2 or JSON messages to a Slack channel. Set `INGESTION_MODE=slack` in your `.env` file.
 
-Your IT department configures Clarity Connect to route messages to Slack. The agent listens on the designated channel and processes whatever arrives.
+The agent listens on the designated Slack channel and processes whatever arrives — either raw HL7v2 pipe-delimited messages or pre-converted JSON.
 
-**Placeholder endpoints:** The current release uses placeholder functions for sending orders back to Epic via Clarity Connect (`src/clarity/adapter.ts`). These need to be connected to your actual Clarity Connect API endpoints by your IT team. The placeholder functions show the expected data format and API contract.
+**Placeholder endpoints:** The current release uses placeholder functions for sending orders back to Epic via Clarity Connect (`src/clarity/adapter.ts`). These need to be connected to your actual Clarity Connect API endpoints by your IT team.
+
+---
+
+### Option B: Epic Community Connect (FHIR R4)
+
+If you're a Community Connect affiliate — meaning you're on a shared Epic instance hosted by another organization — you typically don't have access to Bridges or the interface engine. You get your data through FHIR R4 APIs instead.
+
+**Setup:**
+
+1. Set `INGESTION_MODE=webhook` (or `both` if you also use Slack) in your `.env` file
+2. Set `WORKATO_WEBHOOK_PORT=3100` (or your preferred port)
+3. Optionally set `WORKATO_WEBHOOK_SECRET` for authentication
+4. Configure your Epic FHIR R4 Subscription to send notifications to:
+   ```
+   POST http://your-server:3100/webhook/fhir
+   Authorization: Bearer your-shared-secret-here
+   Content-Type: application/json
+   ```
+
+The agent accepts these FHIR R4 resource types:
+- **DiagnosticReport** — Lab results, pathology, radiology
+- **Observation** — Individual lab values with reference ranges and interpretation flags
+- **ServiceRequest** — Study scheduling and lab order requests
+- **MedicationRequest** — Medication refill and prescription requests
+- **Communication** — Follow-up notifications, office messages, clinical communications
+- **Bundle** — Multiple resources in a single delivery (e.g., a complete lab panel)
+
+The FHIR parser handles critical value detection (HH, LL, CC interpretation codes), reference range formatting, and urgency mapping automatically.
+
+---
+
+### Option C: Workato / iPaaS Integration
+
+If your organization uses Workato, Mirth Connect, Rhapsody, Cloverleaf, or any HTTP-capable integration platform, you can POST directly to the agent's webhook.
+
+**Setup:**
+
+1. Set `INGESTION_MODE=webhook` (or `both`) in your `.env` file
+2. Set `WORKATO_WEBHOOK_PORT=3100`
+3. Set `WORKATO_WEBHOOK_SECRET` to a shared secret (or leave blank to disable auth)
+4. Configure your Workato recipe (or middleware) to POST to one of:
+   ```
+   POST http://your-server:3100/webhook/workato   — Auto-detects format
+   POST http://your-server:3100/webhook/fhir      — Expects FHIR R4 JSON
+   POST http://your-server:3100/webhook/hl7       — Expects raw HL7v2 text
+   ```
+
+**Workato Recipe Pattern:**
+
+A typical Workato recipe for this integration:
+1. **Trigger:** Epic On-Prem Agent (OPA) receives HL7v2 from Epic
+2. **Transform:** (Optional) Workato converts HL7v2 to JSON using built-in HL7 connector
+3. **Action:** HTTP POST to your agent's `/webhook/workato` endpoint
+
+The `/webhook/workato` endpoint auto-detects the payload format, so your recipe can send data in whatever format is most convenient — raw HL7v2 in a JSON envelope, FHIR R4, or pre-converted JSON.
+
+**Health Check:** `GET http://your-server:3100/webhook/health` returns `{"status":"ok"}` — use this in your monitoring.
+
+---
+
+### Running Multiple Sources Simultaneously
+
+Set `INGESTION_MODE=both` to listen on Slack and the webhook server at the same time. Messages from the webhook are processed by the agent and results are forwarded to your Slack channel automatically, so you see everything in one place.
 
 ---
 
@@ -357,7 +475,7 @@ Medical-OpenClaw-Agent/
 |-- src/
 |   |-- core/
 |   |   |-- agent.ts         # The AI reasoning engine (talks to Claude)
-|   |   |-- config.ts        # Loads your settings from .env
+|   |   |-- config.ts        # Loads your settings from .env (+ ingestion mode)
 |   |   |-- types.ts         # Data definitions (patient, lab, order types)
 |   |
 |   |-- slack/
@@ -368,6 +486,12 @@ Medical-OpenClaw-Agent/
 |   |   |-- hl7-parser.ts    # Parses HL7v2 pipe-delimited lab messages
 |   |   |-- deep-links.ts    # Generates "Open in Epic Haiku" links
 |   |
+|   |-- fhir/                # NEW in v0.2.0
+|   |   |-- parser.ts        # FHIR R4 resource parser (Community Connect)
+|   |
+|   |-- workato/             # NEW in v0.2.0
+|   |   |-- webhook.ts       # HTTP webhook server for Workato/FHIR/HL7
+|   |
 |   |-- clarity/
 |   |   |-- adapter.ts       # Placeholder for Clarity Connect API calls
 |   |
@@ -377,9 +501,9 @@ Medical-OpenClaw-Agent/
 |   |-- test/
 |   |   |-- synthetic-data.ts       # Fake but realistic patient/lab data
 |   |   |-- synthetic-scenarios.ts  # Live AI test harness
-|   |   |-- runner.ts               # Offline tests (no API key needed)
+|   |   |-- runner.ts               # Offline tests (74 tests, no API key needed)
 |   |
-|   |-- index.ts              # Main entry point
+|   |-- index.ts              # Main entry point (multi-mode ingestion router)
 |
 |-- .env.example               # Template for your configuration
 |-- .gitignore                 # Prevents sensitive files from being uploaded
